@@ -13,6 +13,7 @@ var app = require('../app');
 var debug = require('debug')('note-collab-backend:server');
 var http = require('http');
 const { Server } = require('socket.io');
+require('dotenv').config();
 
 /**
  * Get port from environment and store in Express.
@@ -34,11 +35,11 @@ var server = http.createServer(app);
 server.listen(port);
 server.on('error', onError);
 server.on('listening', onListening);
-
+console.log('client url', process.env.CLIENT_URL);
 // socket.io setUp
 const io = new Server(server, {
   cors: {
-    origin: process.env.CLIENT_URL,
+    origin: 'http://localhost:5173',
     methods: ['GET', 'POST'],
     credentials: true
   },
