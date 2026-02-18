@@ -39,7 +39,7 @@ console.log('client url', process.env.CLIENT_URL);
 // socket.io setUp
 const io = new Server(server, {
   cors: {
-    origin: 'http://localhost:5173',
+    origin: 'https://frontend-note-collab.vercel.app',
     methods: ['GET', 'POST'],
     credentials: true
   },
