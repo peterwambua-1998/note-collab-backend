@@ -1,0 +1,243 @@
+#!/usr/bin/env node
+
+/**
+ * Module dependencies.
+ */
+
+const { Socket } = require('socket.io');
+const { setupSocketHandlers } = require('../utils/socketHandlers');
+const { cleanupEmptyRooms, generateRoomId, getRoomMetadata, getRoomStats } = require('../utils/roomManager');
+const { uptime } = require('os');
+
+var app = require('../app');
+var debug = require('debug')('note-collab-backend:server');
+var http = require('http');
+const { Server } = require('socket.io');
+
+/**
+ * Get port from environment and store in Express.
+ */
+
+var port = normalizePort(process.env.PORT || '3000');
+app.set('port', port);
+
+/**
+ * Create HTTP server.
+ */
+
+var server = http.createServer(app);
+
+/**
+ * Listen on provided port, on all network interfaces.
+ */
+
+server.listen(port);
+server.on('error', onError);
+server.on('listening', onListening);
+
+// socket.io setUp
+const io = new Server(server, {
+  cors: {
+    origin: 'http://localhost:5173',
+    methods: ['GET', 'POST'],
+    credentials: true
+  },
+  pingTimeout: 60000,
+  pingInterval: 25000
+});
+
+// stores active rooms and their users 
+// structure Map<roomId, Map<socketId, userData>>
+const rooms = new Map();
+
+// store room metadata
+const roomMetadata = new Map();
+
+// socket io connection handler 
+io.on('connection', (socket) => {
+  console.log(`User connected: ${socket.id}`);
+
+  setupSocketHandlers(io, socket, rooms, roomMetadata);
+
+});
+
+// periodic cleanup of empty rooms (every 20 min)
+setInterval(() => {
+  const cleaned = cleanupEmptyRooms(rooms, roomMetadata);
+  if (cleaned.length) {
+    console.log(`Cleaned up ${cleaned.length} empty rooms`);
+  }
+}, 20 * 60 * 1000);
+
+/**
+ * Normalize a port into a number, string, or false.
+ */
+
+app.get('/api/health', (req, res) => {
+  res.json({
+    status: 'ok',
+    activeRooms: rooms.size,
+    totoalUsers: Array.from(rooms.values()).reduce((acc, room) => acc + room.size, 0),
+    timestamp: new Date().toISOString(),
+    uptime: process.uptime()
+  })
+})
+
+app.get('/api/stats', (req, res) => {
+  const stats = {
+    server: {
+      uptime: process.uptime(),
+      memory: process.memoryUsage(),
+      timestamp: new Date().toISOString(),
+    },
+    ...getRoomStats(rooms)
+  };
+
+  res.json(stats);
+})
+
+
+// get specific room info 
+app.get('/api/room/:roomId', (req, res, next) => {
+  try {
+    const { roomId } = req.params;
+
+    const roomInfo = getRoomMetadata(rooms, roomMetadata, roomId);
+
+    if (!roomInfo) {
+      return res.status(400).json({
+        error: 'Room not found'
+      })
+    }
+
+    res.json(roomInfo);
+  } catch (error) {
+    console.log('specific room error', error);
+    next(error);
+  }
+});
+
+
+// create new room
+app.post('/api/room', (req, res, next) => {
+  try {
+    const roomId = generateRoomId();
+
+    rooms.set(roomId, new Map());
+
+    roomMetadata.set(roomId, {
+      createdAt: new Date().toISOString(),
+      createdBy: 'api',
+      createdVia: 'rest'
+    });
+
+    console.log(`Room created via api: ${roomId}`);
+
+    res.json({
+      success: true,
+      roomId,
+      url: `${process.env.CLIENT_URL || 'http://localhost:5173'}/note/${roomId}`
+    })
+  } catch (error) {
+    console.log('create room error', error);
+    next(error)
+  }
+})
+
+
+// delete a room 
+app.delete('/api/room/:roomId', (req, res, next) => {
+  try {
+    const { roomId } = req.params;
+
+    if (!rooms.has(roomId)) {
+      return res.status(404).json({ error: 'Room not found' });
+    }
+
+    // disconnect all users in the room 
+    const room = rooms.ger(roomId);
+
+    const socketIds = Array.from(room.keys());
+
+    socketIds.forEach(socketId => {
+      const socket = io.sockets.sockets.get(socketId);
+      if (socket) {
+        socket.emit('room-closed', { roomId, reason: 'Room deleted by admin' });
+        socket.leave(roomId);
+      }
+    });
+
+    rooms.delete(roomId);
+    roomMetadata.delete(roomId);
+
+    console.log(`room deleted via api: ${roomId}`);
+
+    res.json({
+      success: true,
+      message: 'Room deleted',
+      diconnectedUsers: socketIds.length
+    });
+  } catch (error) {
+    console.log('delete room error:', error);
+    next(error);
+  }
+})
+
+function normalizePort(val) {
+  var port = parseInt(val, 10);
+
+  if (isNaN(port)) {
+    // named pipe
+    return val;
+  }
+
+  if (port >= 0) {
+    // port number
+    return port;
+  }
+
+  return false;
+}
+
+/**
+ * Event listener for HTTP server "error" event.
+ */
+
+function onError(error) {
+  if (error.syscall !== 'listen') {
+    throw error;
+  }
+
+  var bind = typeof port === 'string'
+    ? 'Pipe ' + port
+    : 'Port ' + port;
+
+  // handle specific listen errors with friendly messages
+  switch (error.code) {
+    case 'EACCES':
+      console.error(bind + ' requires elevated privileges');
+      process.exit(1);
+      break;
+    case 'EADDRINUSE':
+      console.error(bind + ' is already in use');
+      process.exit(1);
+      break;
+    default:
+      throw error;
+  }
+}
+
+/**
+ * Event listener for HTTP server "listening" event.
+ */
+
+function onListening() {
+  var addr = server.address();
+  var bind = typeof addr === 'string'
+    ? 'pipe ' + addr
+    : 'port ' + addr.port;
+  debug('Listening on ' + bind);
+}
+
+
+
